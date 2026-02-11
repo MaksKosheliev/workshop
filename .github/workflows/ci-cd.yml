@@ -27,7 +27,7 @@ jobs:
 
             - name: Authenticate to Org
               run: |
-                  echo ${{ secrets.SFDX_AUTH_URL }} > ./SFDX_AUTH_URL.txt
+                  echo ${{ secrets.SFDX_DEV_HUB_AUTH_URL }} > ./SFDX_AUTH_URL.txt
                   sf org login sfdx-url --sfdx-url-file ./SFDX_AUTH_URL.txt --alias TargetOrg
 
             - name: Deploy to Org
