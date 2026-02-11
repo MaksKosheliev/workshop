@@ -1,0 +1,95 @@
+name: Prep Release
+
+on:
+  pull_request: 
+    branches:
+      - main
+
+jobs:
+    prep-release:
+        runs-on: ubuntu-latest
+        permissions:
+          contents: write
+          pull-requests: write
+          repository-projects: write
+          packages: write
+          id-token: write
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+              with:
+                ref: ${{ github.head_ref }}
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v2
+              with:
+                node-version: '20.8.1'
+
+            - name: Get npm prefix directory
+              id: npm-prefix-dir
+              run: echo "dir=$(npm config get prefix)" >> $GITHUB_OUTPUT
+        
+            - name: Cache node modules
+              id: cache-npm
+              uses: actions/cache@v4
+              env:
+                cache-name: cache-node-modules
+              with:
+                path: |
+                      ~/.npm
+                      node_modules
+                      ${{ steps.npm-prefix-dir.outputs.dir }}/lib/node_modules/@salesforce
+                      ${{ steps.npm-prefix-dir.outputs.dir }}/bin/sf
+                      ~/.local/share/sf
+                key: ${{ runner.os }}
+
+            - name: Install Salesforce CLI
+              if: steps.cache-npm.outputs.cache-hit != 'true'
+              run: npm install --global @salesforce/cli
+
+            - name: Save DevHub auth URL
+              shell: bash
+              run: | 
+                echo ${{ secrets.SFDX_DEV_HUB_AUTH_URL }} > ./SF_DEVHUB_AUTH_URL.txt
+            
+            - name: Authenticate to DevHub
+              run: sf org login sfdx-url --sfdx-url-file ./SF_DEVHUB_AUTH_URL.txt -d -a DevHub
+
+            - name: Create Scratch Org
+              run: sf org create scratch --definition-file config/project-scratch-def.json --target-dev-hub DevHub --alias PreReleaseScratch
+            
+            - name: Generate Scratch Org Password
+              run: sf org generate password --target-org PreReleaseScratch
+
+            - name: Extract Release Number
+              id: extract-release-number
+              run: |
+                RELEASE_NUMBER=$(echo "${GITHUB_HEAD_REF}" | sed 's/release\///')
+                echo "RELEASE_NUMBER=${RELEASE_NUMBER}" >> $GITHUB_OUTPUT
+
+            - name: Create Package Version
+              id: create-package-version
+              # run: sf package version create --package rtReduxRecordPicker -a "ver ${{ steps.extract-release-number.outputs.RELEASE_NUMBER }}" -n "${{ steps.extract-release-number.outputs.RELEASE_NUMBER }}.NEXT" --wait 10 --target-dev-hub DevHub --json
+              # run: echo "versionid=$(sf package version create --code-coverage --package rtReduxRecordPicker -a "ver ${{ steps.extract-release-number.outputs.RELEASE_NUMBER }}" -n "${{ steps.extract-release-number.outputs.RELEASE_NUMBER }}.NEXT" --wait 10 --target-dev-hub DevHub --json --installation-key-bypass | jq -r '.result | .SubscriberPackageVersionId')" >> $GITHUB_OUTPUT
+              run: echo "versionid=$(sf package version create --code-coverage --package "PSP WinSync" -a "ver ${{ steps.extract-release-number.outputs.RELEASE_NUMBER }}" -n "${{ steps.extract-release-number.outputs.RELEASE_NUMBER }}.NEXT" --wait 10 --target-dev-hub DevHub --json --installation-key-bypass | jq -r '.result | .SubscriberPackageVersionId')" >> $GITHUB_OUTPUT
+
+            - name: Install Package to PreReleaseScratch
+              run: sf package install --package ${{ steps.create-package-version.outputs.versionid }} --target-org PreReleaseScratch --wait 10
+
+            - name: Generate Creds for PreReleaseScratch
+              id: pre-release-scratch-creds
+              run: echo "creds=$(sf org display --target-org PreReleaseScratch --verbose --json | jq -c '.result | {username, password, instanceUrl}')" >> $GITHUB_OUTPUT
+            
+            - name: Comment PR
+              uses: thollander/actions-comment-pull-request@v3
+              with:
+                message: |
+                  ${{ steps.pre-release-scratch-creds.outputs.creds }}
+
+            - name: Add and Commit Build
+              run: |
+                git config --global user.email "github-actions[bot]@users.noreply.github.com"
+                git config --global user.name "GitHub Actions"
+                git add sfdx-project.json
+                git commit -m "[automated commit] add generated configs"
+                git push origin ${{ github.head_ref }}
